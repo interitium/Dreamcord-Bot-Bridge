@@ -93,6 +93,8 @@ function sanitizeCharacterOverride(input) {
   if (src.avatar_url !== undefined) next.avatar_url = isHttpUrl(src.avatar_url) ? String(src.avatar_url).trim() : '';
   if (src.banner_url !== undefined) next.banner_url = isHttpUrl(src.banner_url) ? String(src.banner_url).trim() : '';
   if (src.room_id !== undefined) next.room_id = String(src.room_id || '').trim().slice(0, 120);
+  if (src.api_key !== undefined) next.api_key = String(src.api_key || '').trim().slice(0, 512);
+  if (src.bot_token !== undefined) next.bot_token = String(src.bot_token || '').trim().slice(0, 512);
   return next;
 }
 
@@ -106,7 +108,9 @@ function applyCharacterOverride(character, override) {
     status_text: override.status_text !== undefined ? String(override.status_text || '').trim().slice(0, 120) : character.status_text,
     avatar_url: override.avatar_url !== undefined ? (isHttpUrl(override.avatar_url) ? String(override.avatar_url).trim() : '') : character.avatar_url,
     banner_url: override.banner_url !== undefined ? (isHttpUrl(override.banner_url) ? String(override.banner_url).trim() : '') : character.banner_url,
-    room_id: override.room_id !== undefined ? String(override.room_id || '').trim().slice(0, 120) : character.room_id
+    room_id: override.room_id !== undefined ? String(override.room_id || '').trim().slice(0, 120) : character.room_id,
+    api_key: override.api_key !== undefined ? String(override.api_key || '').trim().slice(0, 512) : (character.api_key || ''),
+    bot_token: override.bot_token !== undefined ? String(override.bot_token || '').trim().slice(0, 512) : (character.bot_token || '')
   };
 }
 
