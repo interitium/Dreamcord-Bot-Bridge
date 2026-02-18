@@ -409,10 +409,19 @@ async function sillyTavernChatForCharacter(character, input) {
     {
       path: '/api/backends/chat-completions/generate',
       body: {
+        chat_completion_source: 'openai',
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: userPrompt }
         ],
+        temperature: 0.9,
+        max_tokens: 180
+      }
+    },
+    {
+      path: '/api/backends/text-completions/generate',
+      body: {
+        prompt: `${system}\n\n${userPrompt}`,
         temperature: 0.9,
         max_tokens: 180
       }
@@ -524,9 +533,15 @@ async function runResponderTick() {
             if (!shouldCharacterRespond(content, state.botName, sourceId, ov.trigger_keyword)) continue;
             const prompt = content.replace(new RegExp(`@${String(state.botName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'ig'), '').trim() || content;
             const hasNomi = String(ov.api_key || '').trim() && String(ov.room_id || '').trim();
-            const reply = hasNomi
-              ? await nomiChatForCharacter(ov.api_key, ov.room_id, prompt)
-              : await sillyTavernChatForCharacter(ov, prompt);
+            let reply = '';
+            try {
+              reply = hasNomi
+                ? await nomiChatForCharacter(ov.api_key, ov.room_id, prompt)
+                : await sillyTavernChatForCharacter(ov, prompt);
+            } catch (genErr) {
+              state.last_error = String(genErr?.message || genErr || 'generation failed');
+              reply = `I heard you. My AI backend is unavailable right now, please try again in a moment.`;
+            }
             await dcBotJson(`/bot/channels/${encodeURIComponent(chId)}/messages`, ov.bot_token, {
               method: 'POST',
               body: JSON.stringify({ content: reply, prefix: false })
@@ -1008,8 +1023,14 @@ async function init(router) {
   });
 
   router.get('/responder/status', (_req, res) => {
-    const rows = Array.from(responderBySource.entries()).map(([source_id]) => ({ source_id, ...getResponderState(source_id) }));
-    res.json({ ok: true, rows });
+    loadCharacterOverrides()
+      .then((overrides) => {
+        const rows = Object.entries(overrides || {})
+          .filter(([, ov]) => ov && ov.responder_enabled === true)
+          .map(([source_id]) => ({ source_id, ...getResponderState(source_id) }));
+        res.json({ ok: true, rows });
+      })
+      .catch((err) => res.status(500).json({ ok: false, error: err.message || 'status failed' }));
   });
 
   router.post('/characters/:sourceId/presence/connect', async (req, res) => {
