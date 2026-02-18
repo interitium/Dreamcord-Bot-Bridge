@@ -300,6 +300,7 @@ function sanitizeCharacterOverride(input) {
   if (src.bot_token !== undefined) next.bot_token = String(src.bot_token || '').trim().slice(0, 512);
   if (src.presence_enabled !== undefined) next.presence_enabled = Boolean(src.presence_enabled);
   if (src.responder_enabled !== undefined) next.responder_enabled = Boolean(src.responder_enabled);
+  if (src.trigger_keyword !== undefined) next.trigger_keyword = String(src.trigger_keyword || '').trim().slice(0, 120);
   return next;
 }
 
@@ -382,12 +383,20 @@ async function nomiChatForCharacter(apiKey, nomiId, input) {
   return text;
 }
 
-function shouldCharacterRespond(content, botName) {
+function shouldCharacterRespond(content, botName, sourceId, triggerKeyword) {
   const raw = String(content || '').trim();
   if (!raw) return false;
   const lower = raw.toLowerCase();
   const name = String(botName || '').trim().toLowerCase();
+  const source = String(sourceId || '').trim().toLowerCase();
+  const sourceAlias = source.replace(/[-_]+/g, ' ').trim();
+  const trigger = String(triggerKeyword || '').trim().toLowerCase();
   if (name && lower.includes(`@${name}`)) return true;
+  if (name && lower.includes(name)) return true;
+  if (source && lower.includes(`@${source}`)) return true;
+  if (source && lower.includes(source)) return true;
+  if (sourceAlias && lower.includes(sourceAlias)) return true;
+  if (trigger && lower.includes(trigger)) return true;
   return false;
 }
 
@@ -444,7 +453,7 @@ async function runResponderTick() {
             if (String(m?.author_id || '') === String(state.botId || '')) continue;
             if (String(m?.author_id || '').startsWith('bot:') && String(m?.author_id || '') === String(state.botId || '')) continue;
             const content = String(m?.content || '');
-            if (!shouldCharacterRespond(content, state.botName)) continue;
+            if (!shouldCharacterRespond(content, state.botName, sourceId, ov.trigger_keyword)) continue;
             const prompt = content.replace(new RegExp(`@${String(state.botName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'ig'), '').trim() || content;
             const reply = await nomiChatForCharacter(ov.api_key, ov.room_id, prompt);
             await dcBotJson(`/bot/channels/${encodeURIComponent(chId)}/messages`, ov.bot_token, {

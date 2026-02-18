@@ -101,7 +101,8 @@
       api_key: get('dcst-api-key'),
       bot_token: get('dcst-bot-token'),
       presence_enabled: getBool('dcst-presence-enabled'),
-      responder_enabled: getBool('dcst-responder-enabled')
+      responder_enabled: getBool('dcst-responder-enabled'),
+      trigger_keyword: get('dcst-trigger-keyword')
     };
   }
 
@@ -188,7 +189,10 @@
         el('input', { id: `dcst-presence-enabled-${sourceId}`, type: 'checkbox' }),
 
         el('label', { text: 'Auto respond enabled' }),
-        el('input', { id: `dcst-responder-enabled-${sourceId}`, type: 'checkbox' })
+        el('input', { id: `dcst-responder-enabled-${sourceId}`, type: 'checkbox' }),
+
+        el('label', { text: 'Trigger keyword (optional)' }),
+        el('input', { id: `dcst-trigger-keyword-${sourceId}`, value: row.override?.trigger_keyword || '', placeholder: 'supergirl' })
       ]);
       const enabledCb = fields.querySelector(`#dcst-presence-enabled-${sourceId}`);
       if (enabledCb) enabledCb.checked = Boolean(row.override?.presence_enabled === true);
