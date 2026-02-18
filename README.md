@@ -92,3 +92,8 @@ See:
   - `/api/v1/characters`
   - `/api/char/list`
   - `/characters`
+
+
+## URL extension install (manifest)
+This repo now contains root \\manifest.json\\ and \\index.js\\ so SillyTavern URL install succeeds.
+For sync APIs, also install \\sillytavern-plugin/\\ into SillyTavern server plugins.

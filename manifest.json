@@ -1,0 +1,13 @@
+{
+  "display_name": "Dreamcord SillyTavern Bridge",
+  "loading_order": 15,
+  "requires": [],
+  "optional": [],
+  "dependencies": [],
+  "js": "index.js",
+  "author": "Interitium",
+  "version": "0.1.1",
+  "homePage": "https://github.com/interitium/dreamcord-sillytavern",
+  "auto_update": true,
+  "minimum_client_version": "1.0.0"
+}
