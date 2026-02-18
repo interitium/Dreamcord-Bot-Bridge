@@ -75,6 +75,7 @@
 
   function readRowFields(sourceId) {
     const get = (id) => document.getElementById(`${id}-${sourceId}`)?.value || '';
+    const getBool = (id) => Boolean(document.getElementById(`${id}-${sourceId}`)?.checked);
     return {
       name: get('dcst-name'),
       description: get('dcst-description'),
@@ -84,7 +85,8 @@
       banner_url: get('dcst-banner-url'),
       room_id: get('dcst-room-id'),
       api_key: get('dcst-api-key'),
-      bot_token: get('dcst-bot-token')
+      bot_token: get('dcst-bot-token'),
+      presence_enabled: getBool('dcst-presence-enabled')
     };
   }
 
@@ -106,10 +108,16 @@
 
       const summary = el('summary', { class: 'dcst-summary' }, [
         el('span', { class: 'dcst-title', text: c.name || sourceId || 'Character' }),
-        el('span', {
-          class: `dcst-pill ${row.mapped_active ? 'ok' : 'warn'}`,
-          text: row.mapped_app_name ? `${row.mapped_app_name}${row.mapped_active ? '' : ' (inactive)'}` : 'Not mapped'
-        })
+        el('div', { class: 'dcst-summary-pills' }, [
+          el('span', {
+            class: `dcst-pill ${row.mapped_active ? 'ok' : 'warn'}`,
+            text: row.mapped_app_name ? `${row.mapped_app_name}${row.mapped_active ? '' : ' (inactive)'}` : 'Not mapped'
+          }),
+          el('span', {
+            class: `dcst-pill ${(row.presence?.connected ? 'ok' : 'warn')}`,
+            text: `Presence: ${row.presence?.status || 'offline'}`
+          })
+        ])
       ]);
 
       const fields = el('div', { class: 'dcst-fields' }, [
@@ -138,15 +146,48 @@
         el('input', { id: `dcst-api-key-${sourceId}`, value: c.api_key || '', placeholder: 'Nomi/API key for this character' }),
 
         el('label', { text: 'Dreamcord bot token' }),
-        el('input', { id: `dcst-bot-token-${sourceId}`, value: c.bot_token || '', placeholder: 'dcb_...' })
+        el('input', { id: `dcst-bot-token-${sourceId}`, value: c.bot_token || '', placeholder: 'dcb_...' }),
+
+        el('label', { text: 'Bot presence enabled' }),
+        el('input', { id: `dcst-presence-enabled-${sourceId}`, type: 'checkbox' })
       ]);
+      const enabledCb = fields.querySelector(`#dcst-presence-enabled-${sourceId}`);
+      if (enabledCb) enabledCb.checked = Boolean(row.override?.presence_enabled === true);
 
       const actions = el('div', { class: 'dcst-actions' }, [
+        el('button', { type: 'button', text: 'Connect bot' }),
+        el('button', { type: 'button', text: 'Disconnect bot' }),
         el('button', { type: 'button', text: 'Save override' }),
         el('button', { type: 'button', text: 'Clear override' })
       ]);
 
       actions.children[0].onclick = async () => {
+        showStatus(`Connecting ${c.name || sourceId}...`);
+        try {
+          const body = readRowFields(sourceId);
+          await jsend(`/characters/${encodeURIComponent(sourceId)}/presence/connect`, 'POST', {
+            bot_token: body.bot_token || '',
+            presence_enabled: true
+          });
+          await loadPreview();
+          showStatus(`Connected ${c.name || sourceId}.`);
+        } catch (err) {
+          showStatus(`Connect failed: ${err.message || err}`, true);
+        }
+      };
+
+      actions.children[1].onclick = async () => {
+        showStatus(`Disconnecting ${c.name || sourceId}...`);
+        try {
+          await jsend(`/characters/${encodeURIComponent(sourceId)}/presence/disconnect`, 'POST', {});
+          await loadPreview();
+          showStatus(`Disconnected ${c.name || sourceId}.`);
+        } catch (err) {
+          showStatus(`Disconnect failed: ${err.message || err}`, true);
+        }
+      };
+
+      actions.children[2].onclick = async () => {
         showStatus(`Saving ${c.name || sourceId}...`);
         try {
           await jsend(`/characters/${encodeURIComponent(sourceId)}/override`, 'PUT', readRowFields(sourceId));
@@ -157,7 +198,7 @@
         }
       };
 
-      actions.children[1].onclick = async () => {
+      actions.children[3].onclick = async () => {
         showStatus(`Clearing override for ${c.name || sourceId}...`);
         try {
           await jsend(`/characters/${encodeURIComponent(sourceId)}/override`, 'DELETE');
@@ -211,6 +252,7 @@
       #dcst-rows { display:grid; gap:8px; }
       .dcst-item { border:1px solid #33405a; border-radius:9px; background:#121826; overflow:hidden; }
       .dcst-summary { cursor:pointer; list-style:none; padding:8px 10px; display:flex; align-items:center; justify-content:space-between; gap:8px; background:#1c2436; }
+      .dcst-summary-pills { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
       .dcst-summary::-webkit-details-marker { display:none; }
       .dcst-title { color:#eaf0ff; font-weight:600; }
       .dcst-pill { font-size:11px; border-radius:999px; padding:2px 8px; border:1px solid #4a5978; color:#cfdbf6; }

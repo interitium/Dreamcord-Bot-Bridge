@@ -1,5 +1,13 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const WsPkg = (() => {
+  try {
+    return require('ws');
+  } catch (_) {
+    return null;
+  }
+})();
+const WebSocketClient = WsPkg ? (WsPkg.WebSocket || WsPkg) : null;
 
 const DATA_DIR = path.join(__dirname, 'data');
 const MAP_PATH = path.join(DATA_DIR, 'character-map.json');
@@ -10,6 +18,7 @@ const DREAMCORD_BOT_TOKEN = String(process.env.DREAMCORD_BOT_TOKEN || '');
 const DREAMCORD_ADMIN_USERNAME = String(process.env.DREAMCORD_ADMIN_USERNAME || '').trim();
 const DREAMCORD_ADMIN_PASSWORD = String(process.env.DREAMCORD_ADMIN_PASSWORD || '');
 const DREAMCORD_ADMIN_2FA = String(process.env.DREAMCORD_ADMIN_2FA || '').trim();
+const DREAMCORD_WS_URL = String(process.env.DREAMCORD_WS_URL || '').trim();
 const SILLYTAVERN_BASE_URL = String(process.env.SILLYTAVERN_BASE_URL || '').replace(/\/$/, '');
 const SILLYTAVERN_API_KEY = String(process.env.SILLYTAVERN_API_KEY || '').trim();
 const SILLYTAVERN_USERNAME = String(process.env.SILLYTAVERN_USERNAME || '').trim();
@@ -21,6 +30,7 @@ const DEFAULT_SOURCE_LABEL = String(process.env.DEFAULT_SOURCE_TAG || 'sillytave
 let adminSessionCookie = '';
 let stSessionCookie = '';
 let stCsrfToken = '';
+const presenceBySource = new Map();
 
 function hasBridgeConfig() {
   return !!(DREAMCORD_BASE_URL && SILLYTAVERN_BASE_URL && DREAMCORD_ADMIN_USERNAME && DREAMCORD_ADMIN_PASSWORD);
@@ -36,6 +46,134 @@ function slugify(input) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)/g, '')
     .slice(0, 80);
+}
+
+function resolveDreamcordWsUrl() {
+  if (DREAMCORD_WS_URL) return DREAMCORD_WS_URL;
+  if (!DREAMCORD_BASE_URL) return '';
+  try {
+    const u = new URL(DREAMCORD_BASE_URL);
+    const proto = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    if (u.port === '3000') {
+      return `${proto}//${u.hostname}:3001/ws`;
+    }
+    return `${proto}//${u.host}/ws`;
+  } catch (_) {
+    return '';
+  }
+}
+
+function getPresenceState(sourceId) {
+  const entry = presenceBySource.get(String(sourceId));
+  if (!entry) {
+    return { connected: false, status: 'offline', desired: false, last_error: '' };
+  }
+  return {
+    connected: Boolean(entry.connected),
+    status: String(entry.status || (entry.connected ? 'online' : 'offline')),
+    desired: Boolean(entry.desired),
+    last_error: String(entry.last_error || '')
+  };
+}
+
+function disconnectPresenceForSource(sourceId) {
+  const key = String(sourceId || '').trim();
+  if (!key) return;
+  const entry = presenceBySource.get(key);
+  if (!entry) return;
+  entry.desired = false;
+  entry.connected = false;
+  entry.status = 'offline';
+  if (entry.reconnect_timer) {
+    clearTimeout(entry.reconnect_timer);
+    entry.reconnect_timer = null;
+  }
+  if (entry.ws) {
+    try { entry.ws.close(); } catch (_) {}
+    try { entry.ws.terminate?.(); } catch (_) {}
+    entry.ws = null;
+  }
+  presenceBySource.set(key, entry);
+}
+
+function connectPresenceForSource(sourceId, botToken) {
+  const key = String(sourceId || '').trim();
+  const token = String(botToken || '').trim();
+  if (!key) throw new Error('sourceId is required');
+  if (!token) throw new Error('bot_token is required');
+  if (!WebSocketClient) throw new Error('ws module not available in this environment');
+  const wsUrl = resolveDreamcordWsUrl();
+  if (!wsUrl) throw new Error('DREAMCORD_WS_URL could not be resolved');
+
+  const existing = presenceBySource.get(key) || {};
+  if (existing.reconnect_timer) {
+    clearTimeout(existing.reconnect_timer);
+    existing.reconnect_timer = null;
+  }
+  if (existing.ws) {
+    try { existing.ws.close(); } catch (_) {}
+    try { existing.ws.terminate?.(); } catch (_) {}
+  }
+
+  const next = {
+    ...existing,
+    source_id: key,
+    token,
+    desired: true,
+    connected: false,
+    status: 'connecting',
+    last_error: '',
+    ws: null,
+    reconnect_timer: null
+  };
+  presenceBySource.set(key, next);
+
+  const ws = new WebSocketClient(wsUrl, {
+    headers: { Authorization: `Bot ${token}` }
+  });
+  next.ws = ws;
+
+  ws.on('open', () => {
+    const cur = presenceBySource.get(key) || next;
+    cur.connected = true;
+    cur.status = 'online';
+    cur.last_error = '';
+    presenceBySource.set(key, cur);
+  });
+
+  ws.on('error', (err) => {
+    const cur = presenceBySource.get(key) || next;
+    cur.connected = false;
+    cur.status = 'error';
+    cur.last_error = String(err?.message || err || 'websocket error');
+    presenceBySource.set(key, cur);
+  });
+
+  ws.on('close', () => {
+    const cur = presenceBySource.get(key) || next;
+    cur.connected = false;
+    cur.ws = null;
+    if (!cur.desired) {
+      cur.status = 'offline';
+      presenceBySource.set(key, cur);
+      return;
+    }
+    cur.status = 'reconnecting';
+    cur.reconnect_timer = setTimeout(() => {
+      const latest = presenceBySource.get(key);
+      if (!latest || !latest.desired || !latest.token) return;
+      try {
+        connectPresenceForSource(key, latest.token);
+      } catch (e) {
+        latest.status = 'error';
+        latest.last_error = String(e?.message || e || 'reconnect failed');
+        presenceBySource.set(key, latest);
+      }
+    }, 5000);
+    presenceBySource.set(key, cur);
+  });
+
+  return getPresenceState(key);
 }
 
 function extractCookieFromResponse(res, cookieName) {
@@ -151,6 +289,7 @@ function sanitizeCharacterOverride(input) {
   if (src.room_id !== undefined) next.room_id = String(src.room_id || '').trim().slice(0, 120);
   if (src.api_key !== undefined) next.api_key = String(src.api_key || '').trim().slice(0, 512);
   if (src.bot_token !== undefined) next.bot_token = String(src.bot_token || '').trim().slice(0, 512);
+  if (src.presence_enabled !== undefined) next.presence_enabled = Boolean(src.presence_enabled);
   return next;
 }
 
@@ -562,7 +701,8 @@ async function init(router) {
             override,
             mapped_app_id: app?.id || mappedId || null,
             mapped_app_name: app?.name || null,
-            mapped_active: app?.is_active === true
+            mapped_active: app?.is_active === true,
+            presence: getPresenceState(sourceId)
           };
         });
       res.json({ ok: true, total: rows.length, rows });
@@ -587,7 +727,20 @@ async function init(router) {
         overrides[sourceId] = compact;
       }
       await saveCharacterOverrides(overrides);
-      res.json({ ok: true, source_id: sourceId, override: overrides[sourceId] || null });
+      const saved = overrides[sourceId] || null;
+      if (saved?.presence_enabled === true && saved?.bot_token) {
+        try {
+          connectPresenceForSource(sourceId, saved.bot_token);
+        } catch (e) {
+          const state = presenceBySource.get(sourceId) || {};
+          state.status = 'error';
+          state.last_error = String(e?.message || e || 'presence connect failed');
+          presenceBySource.set(sourceId, state);
+        }
+      } else if (saved?.presence_enabled !== true) {
+        disconnectPresenceForSource(sourceId);
+      }
+      res.json({ ok: true, source_id: sourceId, override: saved, presence: getPresenceState(sourceId) });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message || 'Could not save override' });
     }
@@ -600,9 +753,48 @@ async function init(router) {
       const overrides = await loadCharacterOverrides();
       delete overrides[sourceId];
       await saveCharacterOverrides(overrides);
+      disconnectPresenceForSource(sourceId);
       res.json({ ok: true, source_id: sourceId });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message || 'Could not clear override' });
+    }
+  });
+
+  router.get('/presence/status', (_req, res) => {
+    const rows = Array.from(presenceBySource.entries()).map(([source_id]) => ({ source_id, ...getPresenceState(source_id) }));
+    res.json({ ok: true, rows });
+  });
+
+  router.post('/characters/:sourceId/presence/connect', async (req, res) => {
+    try {
+      const sourceId = String(req.params.sourceId || '').trim();
+      if (!sourceId) return res.status(400).json({ error: 'sourceId is required' });
+      const overrides = await loadCharacterOverrides();
+      const current = overrides[sourceId] || {};
+      const token = String(req.body?.bot_token || current.bot_token || '').trim();
+      if (!token) return res.status(400).json({ error: 'bot_token is required' });
+      overrides[sourceId] = { ...current, bot_token: token, presence_enabled: true };
+      await saveCharacterOverrides(overrides);
+      const presence = connectPresenceForSource(sourceId, token);
+      res.json({ ok: true, source_id: sourceId, presence, override: overrides[sourceId] });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message || 'Could not connect presence' });
+    }
+  });
+
+  router.post('/characters/:sourceId/presence/disconnect', async (req, res) => {
+    try {
+      const sourceId = String(req.params.sourceId || '').trim();
+      if (!sourceId) return res.status(400).json({ error: 'sourceId is required' });
+      const overrides = await loadCharacterOverrides();
+      if (overrides[sourceId]) {
+        overrides[sourceId] = { ...overrides[sourceId], presence_enabled: false };
+        await saveCharacterOverrides(overrides);
+      }
+      disconnectPresenceForSource(sourceId);
+      res.json({ ok: true, source_id: sourceId, presence: getPresenceState(sourceId), override: overrides[sourceId] || null });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message || 'Could not disconnect presence' });
     }
   });
 
@@ -622,9 +814,26 @@ async function init(router) {
   });
 
   console.log('[dreamcord-sillytavern-bridge] plugin initialized');
+  loadCharacterOverrides()
+    .then((overrides) => {
+      Object.entries(overrides || {}).forEach(([sourceId, ov]) => {
+        if (ov && ov.presence_enabled === true && ov.bot_token) {
+          try {
+            connectPresenceForSource(sourceId, ov.bot_token);
+          } catch (e) {
+            const state = presenceBySource.get(sourceId) || {};
+            state.status = 'error';
+            state.last_error = String(e?.message || e || 'presence bootstrap failed');
+            presenceBySource.set(sourceId, state);
+          }
+        }
+      });
+    })
+    .catch(() => {});
 }
 
 async function exit() {
+  Array.from(presenceBySource.keys()).forEach((sourceId) => disconnectPresenceForSource(sourceId));
   console.log('[dreamcord-sillytavern-bridge] plugin unloaded');
 }
 
