@@ -385,6 +385,11 @@ async function nomiChatForCharacter(apiKey, nomiId, input) {
 
 function extractChatReply(payload) {
   if (!payload) return '';
+  if (payload && typeof payload === 'object') {
+    if (payload.error === true) return '';
+    const errMsg = String(payload.message || payload.error_message || '').trim();
+    if (errMsg) return '';
+  }
   if (typeof payload === 'string') return payload.trim();
   const choices = Array.isArray(payload?.choices) ? payload.choices : [];
   for (const c of choices) {
@@ -395,6 +400,17 @@ function extractChatReply(payload) {
   }
   const direct = String(payload?.text || payload?.reply || payload?.response || '').trim();
   return direct;
+}
+
+function isBadModelReply(text) {
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return true;
+  return (
+    t.includes('cannot read properties of undefined') ||
+    t.includes('indexof') ||
+    t.includes('typeerror') ||
+    t.includes('undefined')
+  );
 }
 
 async function sillyTavernChatForCharacter(character, input) {
@@ -451,7 +467,7 @@ async function sillyTavernChatForCharacter(character, input) {
       }
       const data = await res.json().catch(() => ({}));
       const text = extractChatReply(data);
-      if (text) return text;
+      if (text && !isBadModelReply(text)) return text;
       errors.push(`${p.path}:empty`);
     } catch (e) {
       errors.push(`${p.path}:${String(e?.message || e)}`);
