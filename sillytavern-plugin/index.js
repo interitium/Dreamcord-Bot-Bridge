@@ -383,6 +383,74 @@ async function nomiChatForCharacter(apiKey, nomiId, input) {
   return text;
 }
 
+function extractChatReply(payload) {
+  if (!payload) return '';
+  if (typeof payload === 'string') return payload.trim();
+  const choices = Array.isArray(payload?.choices) ? payload.choices : [];
+  for (const c of choices) {
+    const m = String(c?.message?.content || '').trim();
+    if (m) return m;
+    const t = String(c?.text || '').trim();
+    if (t) return t;
+  }
+  const direct = String(payload?.text || payload?.reply || payload?.response || '').trim();
+  return direct;
+}
+
+async function sillyTavernChatForCharacter(character, input) {
+  const charName = String(character?.name || 'Character').trim();
+  const desc = String(character?.description || '').trim();
+  const bio = String(character?.bio || '').trim();
+  const system = `You are ${charName}. Stay in character. Keep replies concise and natural for chat.`;
+  const contextBits = [desc, bio].filter(Boolean).join('\n\n');
+  const userPrompt = contextBits ? `${contextBits}\n\nUser message: ${String(input || '').trim()}` : String(input || '').trim();
+
+  const probes = [
+    {
+      path: '/api/backends/chat-completions/generate',
+      body: {
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.9,
+        max_tokens: 180
+      }
+    },
+    {
+      path: '/v1/chat/completions',
+      body: {
+        model: 'default',
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.9,
+        max_tokens: 180
+      }
+    }
+  ];
+
+  const errors = [];
+  for (const p of probes) {
+    try {
+      const res = await stRequest(p.path, { method: 'POST', body: JSON.stringify(p.body) });
+      if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        errors.push(`${p.path}:${res.status}${t ? ` ${t.slice(0, 120)}` : ''}`);
+        continue;
+      }
+      const data = await res.json().catch(() => ({}));
+      const text = extractChatReply(data);
+      if (text) return text;
+      errors.push(`${p.path}:empty`);
+    } catch (e) {
+      errors.push(`${p.path}:${String(e?.message || e)}`);
+    }
+  }
+  throw new Error(`SillyTavern generation failed (${errors.join(' | ')})`);
+}
+
 function shouldCharacterRespond(content, botName, sourceId, triggerKeyword) {
   const raw = String(content || '').trim();
   if (!raw) return false;
@@ -406,7 +474,7 @@ async function runResponderTick() {
   try {
     const overrides = await loadCharacterOverrides();
     const entries = Object.entries(overrides || {}).filter(([, ov]) =>
-      ov && ov.responder_enabled === true && ov.bot_token && ov.api_key && ov.room_id
+      ov && ov.responder_enabled === true && ov.bot_token
     );
     for (const [sourceId, ov] of entries) {
       const state = responderBySource.get(sourceId) || {
@@ -455,7 +523,10 @@ async function runResponderTick() {
             const content = String(m?.content || '');
             if (!shouldCharacterRespond(content, state.botName, sourceId, ov.trigger_keyword)) continue;
             const prompt = content.replace(new RegExp(`@${String(state.botName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'ig'), '').trim() || content;
-            const reply = await nomiChatForCharacter(ov.api_key, ov.room_id, prompt);
+            const hasNomi = String(ov.api_key || '').trim() && String(ov.room_id || '').trim();
+            const reply = hasNomi
+              ? await nomiChatForCharacter(ov.api_key, ov.room_id, prompt)
+              : await sillyTavernChatForCharacter(ov, prompt);
             await dcBotJson(`/bot/channels/${encodeURIComponent(chId)}/messages`, ov.bot_token, {
               method: 'POST',
               body: JSON.stringify({ content: reply, prefix: false })
