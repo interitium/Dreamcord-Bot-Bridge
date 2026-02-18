@@ -42,13 +42,15 @@ function extractCookieFromResponse(res, cookieName) {
   const fromGetSetCookie = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
   const fallback = res.headers.get('set-cookie');
   const all = [...fromGetSetCookie, ...(fallback ? [fallback] : [])].filter(Boolean);
+  let firstCookie = '';
   for (const raw of all) {
     const firstPart = String(raw).split(';')[0] || '';
+    if (!firstCookie && firstPart) firstCookie = firstPart.trim();
     if (firstPart.toLowerCase().startsWith(`${String(cookieName).toLowerCase()}=`)) {
       return firstPart.trim();
     }
   }
-  return '';
+  return firstCookie;
 }
 
 async function ensureDataDir() {
