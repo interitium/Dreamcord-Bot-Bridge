@@ -36,13 +36,25 @@
     return headers;
   }
 
+  async function getFreshCsrfToken() {
+    try {
+      const res = await fetch('/csrf-token', { credentials: 'include' });
+      if (!res.ok) return '';
+      const data = await res.json().catch(() => ({}));
+      return String(data?.token || '');
+    } catch (_) {
+      return '';
+    }
+  }
+
   async function jget(path) {
     await resolveApi();
     const isStPlugin = API === ST_PLUGIN_API;
+    const csrf = isStPlugin ? await getFreshCsrfToken() : '';
     const res = await fetch(`${API}${path}`, {
       credentials: isStPlugin ? 'include' : 'omit',
       mode: isStPlugin ? 'same-origin' : 'cors',
-      headers: isStPlugin ? { ...getStHeaders() } : { Accept: 'application/json' }
+      headers: isStPlugin ? { ...getStHeaders(), ...(csrf ? { 'X-CSRF-Token': csrf } : {}) } : { Accept: 'application/json' }
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
@@ -52,13 +64,14 @@
   async function jsend(path, method, body) {
     await resolveApi();
     const isStPlugin = API === ST_PLUGIN_API;
+    const csrf = isStPlugin ? await getFreshCsrfToken() : '';
     const res = await fetch(`${API}${path}`, {
       method,
       credentials: isStPlugin ? 'include' : 'omit',
       mode: isStPlugin ? 'same-origin' : 'cors',
       headers: {
         'Content-Type': 'application/json',
-        ...(isStPlugin ? getStHeaders() : { Accept: 'application/json' })
+        ...(isStPlugin ? { ...getStHeaders(), ...(csrf ? { 'X-CSRF-Token': csrf } : {}) } : { Accept: 'application/json' })
       },
       body: body ? JSON.stringify(body) : undefined
     });
@@ -181,6 +194,30 @@
       if (enabledCb) enabledCb.checked = Boolean(row.override?.presence_enabled === true);
       const responderCb = fields.querySelector(`#dcst-responder-enabled-${sourceId}`);
       if (responderCb) responderCb.checked = Boolean(row.override?.responder_enabled === true);
+      if (enabledCb) {
+        enabledCb.addEventListener('change', async () => {
+          showStatus(`Saving ${c.name || sourceId}...`);
+          try {
+            await jsend(`/characters/${encodeURIComponent(sourceId)}/override`, 'PUT', readRowFields(sourceId));
+            await loadPreview();
+            showStatus(`Saved override for ${c.name || sourceId}.`);
+          } catch (err) {
+            showStatus(`Save failed: ${err.message || err}`, true);
+          }
+        });
+      }
+      if (responderCb) {
+        responderCb.addEventListener('change', async () => {
+          showStatus(`Saving ${c.name || sourceId}...`);
+          try {
+            await jsend(`/characters/${encodeURIComponent(sourceId)}/override`, 'PUT', readRowFields(sourceId));
+            await loadPreview();
+            showStatus(`Saved override for ${c.name || sourceId}.`);
+          } catch (err) {
+            showStatus(`Save failed: ${err.message || err}`, true);
+          }
+        });
+      }
 
       const actions = el('div', { class: 'dcst-actions' }, [
         el('button', { type: 'button', text: 'Connect bot' }),
