@@ -475,13 +475,22 @@ app.get('/characters/preview', async (_req, res) => {
         const merged = applyCharacterOverride(c, override);
         const mappedId = String(map[sourceId] || '').trim();
         const app = mappedId ? byId.get(mappedId) : (byName.get(String(merged.name || '').toLowerCase()) || null);
+        const presence = getPresenceState(sourceId);
+        const fallbackMapped = (!app && override?.bot_token)
+          ? {
+              id: mappedId || `token:${sourceId}`,
+              name: String(merged.name || sourceId),
+              active: Boolean(presence?.connected) || override?.presence_enabled === true
+            }
+          : null;
         return {
           source_id: sourceId,
           character: merged,
           override,
-          mapped_app_id: app?.id || mappedId || null,
-          mapped_app_name: app?.name || null,
-          mapped_active: app?.is_active === true
+          mapped_app_id: app?.id || mappedId || fallbackMapped?.id || null,
+          mapped_app_name: app?.name || fallbackMapped?.name || null,
+          mapped_active: app ? (app?.is_active === true) : Boolean(fallbackMapped?.active),
+          presence
         };
       });
     res.json({ ok: true, total: rows.length, rows, apps_warning: appsWarning || null });
