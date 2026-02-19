@@ -381,6 +381,17 @@ async function dcAdminJson(pathname, options = {}) {
   return res.json().catch(() => ({}));
 }
 
+async function dcAdminAppsListSafe() {
+  try {
+    const apps = await dcAdminJson('/admin/dev-portal/apps');
+    return { apps: Array.isArray(apps) ? apps : [], warning: '' };
+  } catch (err) {
+    const msg = String(err?.message || err || 'unknown error');
+    console.warn(`[dreamcord-bot-bridge] app list unavailable: ${msg}`);
+    return { apps: [], warning: msg };
+  }
+}
+
 async function dcBotPostToChannel(channelId, content) {
   if (!DREAMCORD_BOT_TOKEN || !channelId || !content) return null;
   const res = await fetch(`${DREAMCORD_BASE_URL}/bot/channels/${channelId}/messages`, {
@@ -447,13 +458,12 @@ app.get('/characters/preview', async (_req, res) => {
     if (!hasBridgeConfig()) {
       return res.status(400).json({ error: 'Bridge not configured. Fill env vars first.' });
     }
-    const [rawCharacters, map, overrides, apps] = await Promise.all([
+    const [rawCharacters, map, overrides] = await Promise.all([
       fetchSillyCharacters(),
       loadCharacterMap(),
-      loadCharacterOverrides(),
-      dcAdminJson('/admin/dev-portal/apps')
+      loadCharacterOverrides()
     ]);
-    const appList = Array.isArray(apps) ? apps : [];
+    const { apps: appList, warning: appsWarning } = await dcAdminAppsListSafe();
     const byId = new Map(appList.map((a) => [String(a.id), a]));
     const byName = new Map(appList.map((a) => [String(a.name || '').toLowerCase(), a]));
     const rows = rawCharacters
@@ -474,7 +484,7 @@ app.get('/characters/preview', async (_req, res) => {
           mapped_active: app?.is_active === true
         };
       });
-    res.json({ ok: true, total: rows.length, rows });
+    res.json({ ok: true, total: rows.length, rows, apps_warning: appsWarning || null });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message || 'Could not build preview' });
   }
