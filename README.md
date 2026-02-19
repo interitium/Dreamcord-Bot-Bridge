@@ -1,6 +1,6 @@
-# Dreamcord SillyTavern Bridge (v0.2.0)
+# Dreamcord Bot Bridge (v0.2.0)
 
-Syncs SillyTavern characters into Dreamcord Dev Portal bot apps with per-character overrides (name, description, bio, status, avatar, banner, room, API key, bot token).
+Syncs SillyTavern characters into Dreamcord Dev Portal bot apps with per-character overrides (name, description, bio, status, avatar, banner, room/channel scope, bot token).
 
 ## Install modes
 
@@ -10,7 +10,7 @@ Runs as its own Express service on port 3710. The SillyTavern frontend extension
 
 ### 2. SillyTavern server plugin
 
-If your ST instance has `enableServerPlugins: true` in `config.yaml`, you can install `sillytavern-plugin/` into `<ST>/plugins/dreamcord-sillytavern-bridge/`. See `sillytavern-plugin/README.md`.
+If your ST instance has `enableServerPlugins: true` in `config.yaml`, you can install `sillytavern-plugin/` into `<ST>/plugins/dreamcord-bot-bridge/`. See `sillytavern-plugin/README.md`.
 
 ### 3. Frontend extension only
 
@@ -19,7 +19,7 @@ The root `manifest.json` + `index.js` can be installed as an ST URL extension. T
 ## Quick start (standalone)
 
 ```powershell
-cd d:\webview\Dreamuniverse\dreamcord-sillytavern-bridge
+cd d:\webview\Dreamuniverse\dreamcord-bot-bridge
 copy .env.example .env
 # Fill .env with your credentials
 npm install
@@ -36,7 +36,7 @@ Test: `curl http://127.0.0.1:3710/health`
 | `DREAMCORD_ADMIN_USERNAME` | Yes | Admin account for Dev Portal API |
 | `DREAMCORD_ADMIN_PASSWORD` | Yes | Admin password |
 | `SILLYTAVERN_BASE_URL` | Yes | e.g. `http://127.0.0.1:8000` |
-| `SILLYTAVERN_API_KEY` | Yes | ST API key |
+| `SILLYTAVERN_API_KEY` | Optional | ST API key (or use `SILLYTAVERN_USERNAME` + `SILLYTAVERN_PASSWORD`) |
 | `DREAMCORD_ADMIN_2FA` | If 2FA | TOTP code (or static secret) |
 | `DREAMCORD_BOT_TOKEN` | No | For posting sync summaries to a channel |
 | `DEFAULT_TARGET_CHANNEL_ID` | No | Channel to post sync summaries |
@@ -72,9 +72,10 @@ Test: `curl http://127.0.0.1:3710/health`
 Each character supports these override fields (set via the extension UI or API):
 - `name`, `description`, `bio`, `status_text`
 - `avatar_url`, `banner_url`
-- `room_id` — Nomi room routing
-- `api_key` — per-character Nomi/external API key
+- `room_id` / `room_ids` — restrict responder to one or more Dreamcord channel IDs
 - `bot_token` — per-character Dreamcord bot token
+- `responder_enabled`, `respond_any_message`, `trigger_keyword`
+- `memory_enabled`, `memory_messages` — optional recent-room context injection for better reply continuity
 
 Override data persists in `data/character-overrides.json`.
 

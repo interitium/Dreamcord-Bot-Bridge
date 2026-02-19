@@ -44,6 +44,24 @@ function isHttpUrl(value) {
   return /^https?:\/\//i.test(String(value || '').trim());
 }
 
+function parseRoomIdList(value) {
+  if (Array.isArray(value)) {
+    return Array.from(new Set(
+      value.map((v) => String(v || '').trim()).filter(Boolean)
+    )).slice(0, 64);
+  }
+  return Array.from(new Set(
+    String(value || '')
+      .split(/[\n,]+/)
+      .map((v) => String(v || '').trim())
+      .filter(Boolean)
+  )).slice(0, 64);
+}
+
+function escapeRegExp(input) {
+  return String(input || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function slugify(input) {
   return String(input || '')
     .toLowerCase()
@@ -290,34 +308,67 @@ async function ensureStSession() {
 function sanitizeCharacterOverride(input) {
   const next = {};
   const src = input && typeof input === 'object' ? input : {};
+  const parseIntBounded = (value, fallback, min, max) => {
+    const n = Number.parseInt(String(value ?? '').trim(), 10);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(min, Math.min(max, n));
+  };
   if (src.name !== undefined) next.name = String(src.name || '').trim().slice(0, 80);
   if (src.description !== undefined) next.description = String(src.description || '').trim().slice(0, 2000);
   if (src.bio !== undefined) next.bio = String(src.bio || '').trim().slice(0, 4000);
+  if (src.character_prefix !== undefined) next.character_prefix = String(src.character_prefix || '').trim().slice(0, 4000);
   if (src.status_text !== undefined) next.status_text = String(src.status_text || '').trim().slice(0, 120);
-  if (src.avatar_url !== undefined) next.avatar_url = isHttpUrl(src.avatar_url) ? String(src.avatar_url).trim() : '';
-  if (src.banner_url !== undefined) next.banner_url = isHttpUrl(src.banner_url) ? String(src.banner_url).trim() : '';
-  if (src.room_id !== undefined) next.room_id = String(src.room_id || '').trim().slice(0, 120);
-  if (src.api_key !== undefined) next.api_key = String(src.api_key || '').trim().slice(0, 512);
+  if (src.room_ids !== undefined) next.room_ids = parseRoomIdList(src.room_ids);
+  if (src.room_id !== undefined) {
+    const first = parseRoomIdList(src.room_id)[0] || '';
+    next.room_id = first.slice(0, 120);
+    if (src.room_ids === undefined && first) next.room_ids = [first];
+  }
+  if (src.room_ids !== undefined && !next.room_id) {
+    const first = (next.room_ids && next.room_ids[0]) ? String(next.room_ids[0]) : '';
+    next.room_id = first.slice(0, 120);
+  }
   if (src.bot_token !== undefined) next.bot_token = String(src.bot_token || '').trim().slice(0, 512);
   if (src.presence_enabled !== undefined) next.presence_enabled = Boolean(src.presence_enabled);
   if (src.responder_enabled !== undefined) next.responder_enabled = Boolean(src.responder_enabled);
+  if (src.respond_any_message !== undefined) next.respond_any_message = Boolean(src.respond_any_message);
   if (src.trigger_keyword !== undefined) next.trigger_keyword = String(src.trigger_keyword || '').trim().slice(0, 120);
+  if (src.memory_enabled !== undefined) next.memory_enabled = Boolean(src.memory_enabled);
+  if (src.memory_messages !== undefined) next.memory_messages = parseIntBounded(src.memory_messages, 6, 0, 20);
   return next;
 }
 
 function applyCharacterOverride(character, override) {
   if (!override || typeof override !== 'object') return character;
+  const mergedRoomIds = parseRoomIdList(
+    override.room_ids !== undefined ? override.room_ids : (character.room_ids || '')
+  );
+  if (!mergedRoomIds.length) {
+    const fallback = parseRoomIdList(override.room_id !== undefined ? override.room_id : character.room_id);
+    fallback.forEach((v) => mergedRoomIds.push(v));
+  }
+  const resolvedRoomId = String(
+    override.room_id !== undefined
+      ? (parseRoomIdList(override.room_id)[0] || '')
+      : (character.room_id || mergedRoomIds[0] || '')
+  ).slice(0, 120);
   return {
     ...character,
     name: override.name !== undefined && override.name !== '' ? String(override.name).trim().slice(0, 80) : character.name,
     description: override.description !== undefined ? String(override.description || '').trim().slice(0, 2000) : character.description,
     bio: override.bio !== undefined ? String(override.bio || '').trim().slice(0, 4000) : character.bio,
+    character_prefix: override.character_prefix !== undefined ? String(override.character_prefix || '').trim().slice(0, 4000) : (character.character_prefix || ''),
     status_text: override.status_text !== undefined ? String(override.status_text || '').trim().slice(0, 120) : character.status_text,
-    avatar_url: override.avatar_url !== undefined ? (isHttpUrl(override.avatar_url) ? String(override.avatar_url).trim() : '') : character.avatar_url,
-    banner_url: override.banner_url !== undefined ? (isHttpUrl(override.banner_url) ? String(override.banner_url).trim() : '') : character.banner_url,
-    room_id: override.room_id !== undefined ? String(override.room_id || '').trim().slice(0, 120) : character.room_id,
-    api_key: override.api_key !== undefined ? String(override.api_key || '').trim().slice(0, 512) : (character.api_key || ''),
-    bot_token: override.bot_token !== undefined ? String(override.bot_token || '').trim().slice(0, 512) : (character.bot_token || '')
+    room_ids: mergedRoomIds,
+    room_id: resolvedRoomId,
+    bot_token: override.bot_token !== undefined ? String(override.bot_token || '').trim().slice(0, 512) : (character.bot_token || ''),
+    respond_any_message: override.respond_any_message === true,
+    memory_enabled: override.memory_enabled !== false,
+    memory_messages: (() => {
+      const n = Number.parseInt(String(override.memory_messages ?? 6), 10);
+      if (!Number.isFinite(n)) return 6;
+      return Math.max(0, Math.min(20, n));
+    })()
   };
 }
 
@@ -336,52 +387,6 @@ async function dcBotJson(pathname, token, options = {}) {
     throw new Error(`Dreamcord bot ${options.method || 'GET'} ${pathname} failed: ${res.status} ${txt}`);
   }
   return res.json().catch(() => ({}));
-}
-
-function extractNomiReply(payload) {
-  if (!payload || typeof payload !== 'object') return '';
-  const candidates = [
-    payload.reply,
-    payload.response,
-    payload.message,
-    payload.text,
-    payload?.data?.reply,
-    payload?.data?.text,
-    payload?.assistantMessage?.text,
-    payload?.replyMessage?.text,
-    payload?.reply_message?.text,
-    payload?.assistant_message?.text,
-    payload?.message?.text
-  ];
-  for (const c of candidates) {
-    if (typeof c === 'string' && c.trim()) return c.trim();
-  }
-  return '';
-}
-
-async function nomiChatForCharacter(apiKey, nomiId, input) {
-  const key = String(apiKey || '').trim();
-  const id = String(nomiId || '').trim();
-  if (!key) throw new Error('Missing character api_key');
-  if (!id) throw new Error('Missing character room_id (used as Nomi id)');
-
-  const res = await fetch(`https://api.nomi.ai/v1/nomis/${encodeURIComponent(id)}/chat`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${key}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ messageText: String(input || '') })
-  });
-
-  if (!res.ok) {
-    const txt = await res.text().catch(() => '');
-    throw new Error(`Nomi API failed: ${res.status} ${txt}`);
-  }
-  const payload = await res.json().catch(() => ({}));
-  const text = extractNomiReply(payload);
-  if (!text) throw new Error('Nomi API returned no reply text');
-  return text;
 }
 
 function extractChatReply(payload) {
@@ -414,10 +419,48 @@ function isBadModelReply(text) {
   );
 }
 
-async function localLlmChat(system, userPrompt) {
+function cleanModelReply(text, charName) {
+  let out = String(text || '').replace(/\r/g, '').trim();
+  if (!out) return '';
+  const name = String(charName || '').trim();
+  if (name) {
+    out = out.replace(new RegExp(`^${escapeRegExp(name)}\\s*:\\s*`, 'i'), '').trim();
+  }
+  const stopMatch = out.match(/\n(?:User message:|Reply context:|From\s+[^:\n]+:)/i);
+  if (stopMatch && Number.isInteger(stopMatch.index)) {
+    out = out.slice(0, stopMatch.index).trim();
+  }
+  const inlineUser = out.search(/User message:/i);
+  if (inlineUser > 0) {
+    out = out.slice(0, inlineUser).trim();
+  }
+  return out;
+}
+
+async function localLlmChat(system, userPrompt, charName) {
   if (!LOCAL_LLM_URL) return null;
   try {
-    const res = await fetch(`${LOCAL_LLM_URL}/v1/chat/completions`, {
+    // Kobold/Comfy-style generation endpoint
+    const genRes = await fetch(`${LOCAL_LLM_URL}/api/v1/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        prompt: `${system}\n\n${userPrompt}\n\n${charName}:`,
+        max_length: 180,
+        temperature: 0.9,
+        rep_pen: 1.08
+      })
+    });
+    if (genRes.ok) {
+      const genData = await genRes.json().catch(() => ({}));
+      const genText = cleanModelReply(String(genData?.results?.[0]?.text || '').trim(), charName);
+      if (genText && !isBadModelReply(genText)) return genText;
+    }
+  } catch (_) {}
+
+  try {
+    // OpenAI-compatible endpoint
+    const chatRes = await fetch(`${LOCAL_LLM_URL}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
@@ -430,10 +473,10 @@ async function localLlmChat(system, userPrompt) {
         max_tokens: 200
       })
     });
-    if (!res.ok) return null;
-    const data = await res.json().catch(() => ({}));
-    const text = extractChatReply(data);
-    if (text && !isBadModelReply(text)) return text;
+    if (!chatRes.ok) return null;
+    const chatData = await chatRes.json().catch(() => ({}));
+    const chatText = cleanModelReply(extractChatReply(chatData), charName);
+    if (chatText && !isBadModelReply(chatText)) return chatText;
   } catch (_) {}
   return null;
 }
@@ -446,11 +489,9 @@ async function sillyTavernChatForCharacter(character, input) {
   const contextBits = [desc, bio].filter(Boolean).join('\n\n');
   const userPrompt = contextBits ? `${contextBits}\n\nUser message: ${String(input || '').trim()}` : String(input || '').trim();
 
-  // Try local LLM first (fastest, no auth needed)
-  const localReply = await localLlmChat(system, userPrompt);
+  // Try local LLM first, then fall back to ST generation probes.
+  const localReply = await localLlmChat(system, userPrompt, charName);
   if (localReply) return localReply;
-
-  // Fall back to ST generation proxy
   const probes = [
     {
       path: '/api/backends/chat-completions/generate',
@@ -490,7 +531,7 @@ async function sillyTavernChatForCharacter(character, input) {
         continue;
       }
       const data = await res.json().catch(() => ({}));
-      const text = extractChatReply(data);
+      const text = cleanModelReply(extractChatReply(data), charName);
       if (text && !isBadModelReply(text)) return text;
       errors.push(`${p.path}:empty`);
     } catch (e) {
@@ -500,10 +541,48 @@ async function sillyTavernChatForCharacter(character, input) {
   throw new Error(`Generation failed (${errors.join(' | ')})`);
 }
 
-function shouldCharacterRespond(content, botName, sourceId, triggerKeyword) {
+function isBotAuthorMatch(authorId, botId, sourceId) {
+  const a = String(authorId || '').trim().toLowerCase();
+  if (!a) return false;
+  const botAppId = String(botId || '').trim().toLowerCase();
+  const source = String(sourceId || '').trim().toLowerCase();
+  if (botAppId && (a === botAppId || a === `bot:${botAppId}`)) return true;
+  if (source && (a === source || a === `bot:${source}`)) return true;
+  return false;
+}
+
+function messageRepliesToBot(message, botId, botName, sourceId, lookupReplyAuthorId) {
+  const replyAuthor = String(
+    message?.reply_to_author_id ||
+    message?.reply_to?.author_id ||
+    ''
+  ).trim().toLowerCase();
+  if (replyAuthor && isBotAuthorMatch(replyAuthor, botId, sourceId)) return true;
+
+  const replyUser = String(
+    message?.reply_to_username ||
+    message?.reply_to?.username ||
+    ''
+  ).trim().toLowerCase();
+  const name = String(botName || '').trim().toLowerCase();
+  if (replyUser && name && replyUser === name) return true;
+
+  const replyToId = String(message?.reply_to_id || message?.replyToId || '').trim();
+  if (replyToId && typeof lookupReplyAuthorId === 'function') {
+    const fallbackAuthor = lookupReplyAuthorId(replyToId);
+    if (isBotAuthorMatch(fallbackAuthor, botId, sourceId)) return true;
+  }
+
+  return false;
+}
+
+function shouldCharacterRespond(content, botName, sourceId, triggerKeyword, message, botId, lookupReplyAuthorId, respondAnyMessage = false) {
+  if (messageRepliesToBot(message, botId, botName, sourceId, lookupReplyAuthorId)) return true;
   const raw = String(content || '').trim();
   if (!raw) return false;
+  if (respondAnyMessage) return true;
   const lower = raw.toLowerCase();
+  if (lower.includes("user message:") && botName && lower.includes(`${botName.toLowerCase()}:`)) return false;
   const name = String(botName || '').trim().toLowerCase();
   const source = String(sourceId || '').trim().toLowerCase();
   const sourceAlias = source.replace(/[-_]+/g, ' ').trim();
@@ -532,8 +611,14 @@ async function runResponderTick() {
         last_error: '',
         botName: '',
         botId: '',
-        lastSeenByChannel: {}
+        lastSeenByChannel: {},
+        processedMessageIds: new Set(),
+        messageAuthorById: new Map(),
+        recentMessagesByChannel: new Map()
       };
+      if (!(state.processedMessageIds instanceof Set)) state.processedMessageIds = new Set();
+      if (!(state.messageAuthorById instanceof Map)) state.messageAuthorById = new Map();
+      if (!(state.recentMessagesByChannel instanceof Map)) state.recentMessagesByChannel = new Map();
       state.enabled = true;
       if (state.busy) {
         responderBySource.set(sourceId, state);
@@ -550,9 +635,18 @@ async function runResponderTick() {
 
         const channels = await dcBotJson('/bot/channels', ov.bot_token, { method: 'GET' });
         const textChannels = (Array.isArray(channels) ? channels : []).filter((c) => c.channel_type === 'text' || c.channel_type === 'forum');
-        for (const ch of textChannels) {
+        const restrictedRoomIds = parseRoomIdList(ov.room_ids !== undefined ? ov.room_ids : ov.room_id);
+        const scopedChannels = restrictedRoomIds.length
+          ? textChannels.filter((c) => restrictedRoomIds.includes(String(c?.id || '')))
+          : textChannels;
+        for (const ch of scopedChannels) {
           const chId = String(ch.id || '');
           if (!chId) continue;
+          let channelHistory = state.recentMessagesByChannel.get(chId);
+          if (!Array.isArray(channelHistory)) {
+            channelHistory = [];
+            state.recentMessagesByChannel.set(chId, channelHistory);
+          }
           const prev = String(state.lastSeenByChannel[chId] || '');
           if (!prev) {
             state.lastSeenByChannel[chId] = new Date().toISOString();
@@ -563,21 +657,71 @@ async function runResponderTick() {
           for (const m of list) {
             const mId = String(m?.id || '');
             if (!mId) continue;
+            if (state.processedMessageIds.has(mId)) continue;
+            const msgAuthorId = String(m?.author_id || '');
+            const senderName = String(m?.username || 'User').trim() || 'User';
+            const content = String(m?.content || '');
+            const contentTrimmed = content.trim();
+            if (contentTrimmed) {
+              channelHistory.push({ id: mId, author: senderName, text: contentTrimmed, author_id: msgAuthorId || '', created_at: String(m?.created_at || '') });
+              while (channelHistory.length > 120) channelHistory.shift();
+            }
+            const memoryEnabled = ov.memory_enabled !== false;
+            const memoryMessages = (() => {
+              const n = Number.parseInt(String(ov.memory_messages ?? 6), 10);
+              if (!Number.isFinite(n)) return 6;
+              return Math.max(0, Math.min(20, n));
+            })();
+            const promptHistory = contentTrimmed ? channelHistory.slice(0, -1) : channelHistory;
+            if (msgAuthorId) {
+              state.messageAuthorById.set(mId, msgAuthorId);
+              while (state.messageAuthorById.size > 2000) {
+                const oldestMsg = state.messageAuthorById.keys().next().value;
+                if (!oldestMsg) break;
+                state.messageAuthorById.delete(oldestMsg);
+              }
+            }
             const createdAt = String(m?.created_at || '');
             if (createdAt && createdAt > String(state.lastSeenByChannel[chId] || '')) {
               state.lastSeenByChannel[chId] = createdAt;
             }
             if (String(m?.author_id || '') === String(state.botId || '')) continue;
             if (String(m?.author_id || '').startsWith('bot:') && String(m?.author_id || '') === String(state.botId || '')) continue;
-            const content = String(m?.content || '');
-            if (!shouldCharacterRespond(content, state.botName, sourceId, ov.trigger_keyword)) continue;
-            const prompt = content.replace(new RegExp(`@${String(state.botName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'ig'), '').trim() || content;
-            const hasNomi = String(ov.api_key || '').trim() && String(ov.room_id || '').trim();
+            if (ov.respond_any_message === true && String(m?.author_id || '').startsWith('bot:')) continue;
+            if (!shouldCharacterRespond(
+              content,
+              state.botName,
+              sourceId,
+              ov.trigger_keyword,
+              m,
+              state.botId,
+              (replyId) => state.messageAuthorById.get(String(replyId || '').trim()) || '',
+              ov.respond_any_message === true
+            )) continue;
+            const replyContext = String(m?.reply_to_content || m?.reply_to?.content || '').trim();
+            const replyTarget = String(m?.reply_to_username || m?.reply_to?.username || '').trim();
+            const basePromptParts = [];
+            if (memoryEnabled && memoryMessages > 0 && promptHistory.length) {
+              const recentLines = promptHistory
+                .slice(-memoryMessages)
+                .map((entry) => `${String(entry?.author || 'User').trim() || 'User'}: ${String(entry?.text || '').trim()}`)
+                .filter(Boolean);
+              if (recentLines.length) {
+                basePromptParts.push(`Recent room context:\n${recentLines.join('\n')}`);
+              }
+            }
+            if (content.trim()) basePromptParts.push(`From ${senderName}: ${content.trim()}`);
+            if (replyContext) {
+              basePromptParts.push(
+                `Reply context: in reply to ${replyTarget || 'previous message'}: ${replyContext}`
+              );
+            }
+            const basePrompt = basePromptParts.join('\n\n').trim();
+            if (!basePrompt) continue;
+            const prompt = basePrompt.replace(new RegExp(`@${escapeRegExp(String(state.botName))}`, 'ig'), '').trim() || basePrompt;
             let reply = '';
             try {
-              reply = hasNomi
-                ? await nomiChatForCharacter(ov.api_key, ov.room_id, prompt)
-                : await sillyTavernChatForCharacter(ov, prompt);
+              reply = await sillyTavernChatForCharacter(ov, prompt);
             } catch (genErr) {
               state.last_error = String(genErr?.message || genErr || 'generation failed');
               reply = `I heard you. My AI backend is unavailable right now, please try again in a moment.`;
@@ -586,7 +730,17 @@ async function runResponderTick() {
               method: 'POST',
               body: JSON.stringify({ content: reply, prefix: false })
             });
-          }
+            if (reply) {
+              channelHistory.push({ id: `bot:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`, author: state.botName || sourceId, text: String(reply).trim(), author_id: state.botId || '', created_at: new Date().toISOString() });
+              while (channelHistory.length > 120) channelHistory.shift();
+            }
+            state.processedMessageIds.add(mId);
+            while (state.processedMessageIds.size > 500) {
+              const oldest = state.processedMessageIds.values().next().value;
+              if (!oldest) break;
+              state.processedMessageIds.delete(oldest);
+            }
+         }
         }
         state.last_error = '';
       } catch (e) {
@@ -676,6 +830,7 @@ function normalizeCharacter(raw) {
   const description = String(raw?.description || raw?.persona || raw?.personality || raw?.bio || '').trim();
   const scenario = String(raw?.scenario || raw?.context || '').trim();
   const greeting = String(raw?.first_mes || raw?.greeting || raw?.welcome || '').trim();
+  const characterPrefix = String(raw?.character_prefix || raw?.image_prompt_prefix || raw?.prompt_prefix || '').trim();
   const statusText = String(raw?.status || raw?.tagline || raw?.mood || 'SillyTavern Character').trim();
   const avatarUrl = String(raw?.avatar_url || raw?.avatar || raw?.image || raw?.icon || '').trim();
   const bannerUrl = String(raw?.banner_url || raw?.banner || raw?.cover || '').trim();
@@ -687,6 +842,7 @@ function normalizeCharacter(raw) {
     name: name.slice(0, 80),
     description: description.slice(0, 2000),
     bio: bioParts.join('\n\n').slice(0, 4000),
+    character_prefix: characterPrefix.slice(0, 4000),
     status_text: statusText.slice(0, 120),
     avatar_url: isHttpUrl(avatarUrl) ? avatarUrl : '',
     banner_url: isHttpUrl(bannerUrl) ? bannerUrl : '',
@@ -785,13 +941,16 @@ async function dcBotPostToChannel(channelId, content) {
 }
 
 function toAppPatch(character) {
+  const promptPrefix = String(
+    character.character_prefix ||
+    [character.description || '', character.bio || ''].filter(Boolean).join('\n\n')
+  ).trim().slice(0, 4000);
   return {
     name: character.name,
     description: character.description || `Imported from ${DEFAULT_SOURCE_LABEL}`,
     bio: character.bio || '',
+    system_prompt: promptPrefix,
     status_text: character.status_text || 'SillyTavern Character',
-    avatar_url: character.avatar_url || null,
-    banner_url: character.banner_url || null,
     profile_source_label: DEFAULT_SOURCE_LABEL,
     profile_hide_room: false,
     nomi_room_default: character.room_id || null
@@ -886,8 +1045,6 @@ async function runCharacterSync(opts = {}) {
         String(appRow.description || '') !== String(patch.description || '') ||
         String(appRow.bio || '') !== String(patch.bio || '') ||
         String(appRow.status_text || '') !== String(patch.status_text || '') ||
-        String(appRow.avatar_url || '') !== String(patch.avatar_url || '') ||
-        String(appRow.banner_url || '') !== String(patch.banner_url || '') ||
         String(appRow.profile_source_label || '') !== String(patch.profile_source_label || '') ||
         Boolean(appRow.profile_hide_room) !== Boolean(patch.profile_hide_room) ||
         String(appRow.nomi_room_default || '') !== String(patch.nomi_room_default || '');
@@ -943,7 +1100,7 @@ async function runCharacterSync(opts = {}) {
 
 async function init(router) {
   router.get('/health', (_req, res) => {
-    res.json({ ok: true, configured: hasBridgeConfig(), plugin: 'dreamcord-sillytavern-bridge' });
+    res.json({ ok: true, configured: hasBridgeConfig(), plugin: 'dreamcord-bot-bridge' });
   });
 
   router.get('/config', (_req, res) => {
@@ -1011,6 +1168,9 @@ async function init(router) {
       const patch = sanitizeCharacterOverride(req.body || {});
       const overrides = await loadCharacterOverrides();
       const next = { ...(overrides[sourceId] || {}), ...patch };
+      delete next.api_key;
+      delete next.avatar_url;
+      delete next.banner_url;
       const compact = Object.fromEntries(
         Object.entries(next).filter(([, v]) => v !== undefined && v !== null && String(v) !== '')
       );
@@ -1121,7 +1281,7 @@ async function init(router) {
     }
   });
 
-  console.log('[dreamcord-sillytavern-bridge] plugin initialized');
+  console.log('[dreamcord-bot-bridge] plugin initialized');
   loadCharacterOverrides()
     .then((overrides) => {
       Object.entries(overrides || {}).forEach(([sourceId, ov]) => {
@@ -1152,15 +1312,15 @@ async function exit() {
     clearInterval(responderLoop);
     responderLoop = null;
   }
-  console.log('[dreamcord-sillytavern-bridge] plugin unloaded');
+  console.log('[dreamcord-bot-bridge] plugin unloaded');
 }
 
 module.exports = {
   init,
   exit,
   info: {
-    id: 'dreamcord-sillytavern-bridge',
-    name: 'Dreamcord SillyTavern Bridge',
+    id: 'dreamcord-bot-bridge',
+    name: 'Dreamcord Bot Bridge',
     description: 'Sync SillyTavern characters into Dreamcord Dev Portal bot apps.'
   }
 };

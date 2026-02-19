@@ -6,17 +6,17 @@ This folder can be installed directly as a SillyTavern server plugin.
 
 1. Copy folder into your SillyTavern plugins directory:
 
-`<SillyTavern>/plugins/dreamcord-sillytavern-bridge`
+`<SillyTavern>/plugins/dreamcord-bot-bridge`
 
 2. Ensure `enableServerPlugins: true` in `config.yaml`.
 3. Restart SillyTavern.
 
 Plugin routes become available under:
 
-- `/api/plugins/dreamcord-sillytavern-bridge/health`
-- `/api/plugins/dreamcord-sillytavern-bridge/config`
-- `/api/plugins/dreamcord-sillytavern-bridge/mappings`
-- `/api/plugins/dreamcord-sillytavern-bridge/sync/characters`
+- `/api/plugins/dreamcord-bot-bridge/health`
+- `/api/plugins/dreamcord-bot-bridge/config`
+- `/api/plugins/dreamcord-bot-bridge/mappings`
+- `/api/plugins/dreamcord-bot-bridge/sync/characters`
 
 ## Install from GitHub
 

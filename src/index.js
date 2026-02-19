@@ -75,6 +75,20 @@ function isHttpUrl(value) {
   return /^https?:\/\//i.test(s);
 }
 
+function parseRoomIdList(value) {
+  if (Array.isArray(value)) {
+    return Array.from(new Set(
+      value.map((v) => String(v || '').trim()).filter(Boolean)
+    )).slice(0, 64);
+  }
+  return Array.from(new Set(
+    String(value || '')
+      .split(/[\n,]+/)
+      .map((v) => String(v || '').trim())
+      .filter(Boolean)
+  )).slice(0, 64);
+}
+
 function slugify(input) {
   return String(input || '')
     .toLowerCase()
@@ -135,31 +149,60 @@ async function saveCharacterOverrides(overrides) {
 function sanitizeCharacterOverride(input) {
   const next = {};
   const src = input && typeof input === 'object' ? input : {};
+  const parseIntBounded = (value, fallback, min, max) => {
+    const n = Number.parseInt(String(value ?? '').trim(), 10);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(min, Math.min(max, n));
+  };
   if (src.name !== undefined) next.name = String(src.name || '').trim().slice(0, 80);
   if (src.description !== undefined) next.description = String(src.description || '').trim().slice(0, 2000);
   if (src.bio !== undefined) next.bio = String(src.bio || '').trim().slice(0, 4000);
   if (src.status_text !== undefined) next.status_text = String(src.status_text || '').trim().slice(0, 120);
-  if (src.avatar_url !== undefined) next.avatar_url = isHttpUrl(src.avatar_url) ? String(src.avatar_url).trim() : '';
-  if (src.banner_url !== undefined) next.banner_url = isHttpUrl(src.banner_url) ? String(src.banner_url).trim() : '';
-  if (src.room_id !== undefined) next.room_id = String(src.room_id || '').trim().slice(0, 120);
-  if (src.api_key !== undefined) next.api_key = String(src.api_key || '').trim().slice(0, 512);
+  if (src.room_ids !== undefined) next.room_ids = parseRoomIdList(src.room_ids);
+  if (src.room_id !== undefined) {
+    const first = parseRoomIdList(src.room_id)[0] || '';
+    next.room_id = first.slice(0, 120);
+    if (src.room_ids === undefined && first) next.room_ids = [first];
+  }
+  if (src.room_ids !== undefined && !next.room_id) {
+    const first = (next.room_ids && next.room_ids[0]) ? String(next.room_ids[0]) : '';
+    next.room_id = first.slice(0, 120);
+  }
   if (src.bot_token !== undefined) next.bot_token = String(src.bot_token || '').trim().slice(0, 512);
+  if (src.memory_enabled !== undefined) next.memory_enabled = Boolean(src.memory_enabled);
+  if (src.memory_messages !== undefined) next.memory_messages = parseIntBounded(src.memory_messages, 6, 0, 20);
   return next;
 }
 
 function applyCharacterOverride(character, override) {
   if (!override || typeof override !== 'object') return character;
+  const mergedRoomIds = parseRoomIdList(
+    override.room_ids !== undefined ? override.room_ids : (character.room_ids || '')
+  );
+  if (!mergedRoomIds.length) {
+    const fallback = parseRoomIdList(override.room_id !== undefined ? override.room_id : character.room_id);
+    fallback.forEach((v) => mergedRoomIds.push(v));
+  }
+  const resolvedRoomId = String(
+    override.room_id !== undefined
+      ? (parseRoomIdList(override.room_id)[0] || '')
+      : (character.room_id || mergedRoomIds[0] || '')
+  ).slice(0, 120);
   return {
     ...character,
     name: override.name !== undefined && override.name !== '' ? String(override.name).trim().slice(0, 80) : character.name,
     description: override.description !== undefined ? String(override.description || '').trim().slice(0, 2000) : character.description,
     bio: override.bio !== undefined ? String(override.bio || '').trim().slice(0, 4000) : character.bio,
     status_text: override.status_text !== undefined ? String(override.status_text || '').trim().slice(0, 120) : character.status_text,
-    avatar_url: override.avatar_url !== undefined ? (isHttpUrl(override.avatar_url) ? String(override.avatar_url).trim() : '') : character.avatar_url,
-    banner_url: override.banner_url !== undefined ? (isHttpUrl(override.banner_url) ? String(override.banner_url).trim() : '') : character.banner_url,
-    room_id: override.room_id !== undefined ? String(override.room_id || '').trim().slice(0, 120) : character.room_id,
-    api_key: override.api_key !== undefined ? String(override.api_key || '').trim().slice(0, 512) : (character.api_key || ''),
-    bot_token: override.bot_token !== undefined ? String(override.bot_token || '').trim().slice(0, 512) : (character.bot_token || '')
+    room_ids: mergedRoomIds,
+    room_id: resolvedRoomId,
+    bot_token: override.bot_token !== undefined ? String(override.bot_token || '').trim().slice(0, 512) : (character.bot_token || ''),
+    memory_enabled: override.memory_enabled !== false,
+    memory_messages: (() => {
+      const n = Number.parseInt(String(override.memory_messages ?? 6), 10);
+      if (!Number.isFinite(n)) return 6;
+      return Math.max(0, Math.min(20, n));
+    })()
   };
 }
 
@@ -359,8 +402,6 @@ function toAppPatch(character) {
     description: character.description || `Imported from ${DEFAULT_SOURCE_LABEL}`,
     bio: character.bio || '',
     status_text: character.status_text || 'SillyTavern Character',
-    avatar_url: character.avatar_url || null,
-    banner_url: character.banner_url || null,
     profile_source_label: DEFAULT_SOURCE_LABEL,
     profile_hide_room: false,
     nomi_room_default: character.room_id || null
@@ -380,7 +421,7 @@ function buildSyncSummary(result) {
 // --- Routes ---
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'dreamcord-sillytavern-bridge', configured: hasBridgeConfig() });
+  res.json({ ok: true, service: 'dreamcord-bot-bridge', configured: hasBridgeConfig() });
 });
 
 app.get('/config', (_req, res) => {
@@ -446,6 +487,9 @@ app.put('/characters/:sourceId/override', async (req, res) => {
     const patch = sanitizeCharacterOverride(req.body || {});
     const overrides = await loadCharacterOverrides();
     const next = { ...(overrides[sourceId] || {}), ...patch };
+    delete next.api_key;
+    delete next.avatar_url;
+    delete next.banner_url;
     const compact = Object.fromEntries(
       Object.entries(next).filter(([, v]) => v !== undefined && v !== null && String(v) !== '')
     );
@@ -556,8 +600,6 @@ app.post('/sync/characters', async (req, res) => {
           String(appRow.description || '') !== String(patch.description || '') ||
           String(appRow.bio || '') !== String(patch.bio || '') ||
           String(appRow.status_text || '') !== String(patch.status_text || '') ||
-          String(appRow.avatar_url || '') !== String(patch.avatar_url || '') ||
-          String(appRow.banner_url || '') !== String(patch.banner_url || '') ||
           String(appRow.profile_source_label || '') !== String(patch.profile_source_label || '') ||
           Boolean(appRow.profile_hide_room) !== Boolean(patch.profile_hide_room) ||
           String(appRow.nomi_room_default || '') !== String(patch.nomi_room_default || '');

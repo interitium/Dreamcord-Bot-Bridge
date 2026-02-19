@@ -1,5 +1,5 @@
 {
-  "name": "dreamcord-sillytavern-bridge-plugin",
+  "name": "dreamcord-bot-bridge-plugin",
   "version": "0.1.0",
   "private": true,
   "main": "index.js",
